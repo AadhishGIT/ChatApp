@@ -1,8 +1,8 @@
 import os
 from langchain_community.document_loaders import PyPDFLoader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_openai import OpenAIEmbeddings
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import Chroma
+from langchain_community.embeddings import HuggingFaceEmbeddings
 from config import CHROMA_DB_DIR
 
 DATA_DIR = "./data/pdfs"
@@ -23,7 +23,7 @@ def ingest_docs():
 
     print(f"Split into {len(chunks)} chunks.")
 
-    embeddings = OpenAIEmbeddings()
+    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
 
     vectordb = Chroma.from_documents(
         documents=chunks,

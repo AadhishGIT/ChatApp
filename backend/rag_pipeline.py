@@ -1,16 +1,21 @@
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_community.vectorstores import Chroma
+from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_groq import ChatGroq
 from langchain.chains import RetrievalQA
-from config import OPENAI_API_KEY, CHROMA_DB_DIR
+from config import GROQ_API_KEY, CHROMA_DB_DIR
 
 def load_rag_pipeline():
-    llm = ChatOpenAI(
-        model="gpt-4o-mini",
-        temperature=0,
-        openai_api_key=OPENAI_API_KEY
+    llm = ChatGroq(
+        groq_api_key=GROQ_API_KEY,
+        model_name="llama-3.3-70b-versatile",
+        temperature=0
     )
 
-    embeddings = OpenAIEmbeddings()
+
+    embeddings = HuggingFaceEmbeddings(
+        model_name="sentence-transformers/all-MiniLM-L6-v2"
+    )
+
 
     vectordb = Chroma(
         persist_directory=CHROMA_DB_DIR,
@@ -21,9 +26,9 @@ def load_rag_pipeline():
 
     qa_chain = RetrievalQA.from_chain_type(
         llm=llm,
-        chain_type="stuff",
         retriever=retriever,
-        return_source_documents=True,
+        chain_type="stuff",
+        return_source_documents=True
     )
 
     return qa_chain

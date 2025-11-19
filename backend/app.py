@@ -1,30 +1,30 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, UploadFile, File
+import shutil
+import os
 from fastapi.middleware.cors import CORSMiddleware
-from rag_pipeline import load_rag_pipeline
 
 app = FastAPI()
-qa_chain = load_rag_pipeline()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # allow frontend
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-@app.get("/")
-def root():
-    return {"message": "RAG backend is running!"}
+UPLOAD_DIR = "./data/pdfs"
+os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-@app.post("/ask")
-async def ask_question(payload: dict):
-    question = payload.get("question")
+@app.post("/upload")
+async def upload_pdf(file: UploadFile = File(...)):
+    print("Received file:", file.filename)
+    if not file.filename.endswith(".pdf"):
+        return {"error": "Only PDF files are allowed"}
 
-    if not question:
-        return {"error": "Question is required."}
+    file_path = os.path.join(UPLOAD_DIR, file.filename)
 
-    response = qa_chain(question)
-    answer = response["result"]
+    with open(file_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
 
-    return {"answer": answer}
+    return {"message": "PDF uploaded successfully", "filename": file.filename}
