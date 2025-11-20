@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 
 interface Message {
   sender: "user" | "bot";
@@ -10,10 +10,12 @@ interface Conversation {
   title: string;
   createdAt: number;
   messages: Message[];
+  pdfs: string[]; // attached PDFs for this chat
 }
 
 const ASK_API_URL = "http://localhost:8000/ask";
 const UPLOAD_API_URL = "http://localhost:8000/upload";
+const RESET_API_URL = "http://localhost:8000/reset"; // optional, keep if you added reset
 const THEME_KEY = "rag-theme";
 
 const App: React.FC = () => {
@@ -23,6 +25,7 @@ const App: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [isDark, setIsDark] = useState(true);
   const [uploading, setUploading] = useState(false);
+  const [resetting, setResetting] = useState(false);
 
   const chatEndRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -35,7 +38,6 @@ const App: React.FC = () => {
     } else if (saved === "dark") {
       setIsDark(true);
     } else {
-      // fallback: prefer system dark
       const prefersDark = window.matchMedia?.(
         "(prefers-color-scheme: dark)"
       ).matches;
@@ -56,32 +58,49 @@ const App: React.FC = () => {
         title: "New chat",
         createdAt: Date.now(),
         messages: [],
+        pdfs: [],
       };
       setConversations([first]);
       setActiveId(first.id);
     }
   }, [conversations.length]);
 
-  const activeConversation =
-    conversations.find((c) => c.id === activeId) || conversations[0];
-  const messages = activeConversation?.messages ?? [];
+  const activeConversation = useMemo(
+    () => conversations.find((c) => c.id === activeId) ?? conversations[0],
+    [conversations, activeId]
+  );
+
+  const messages = useMemo(
+    () => activeConversation?.messages ?? [],
+    [activeConversation]
+  );
 
   const scrollToBottom = () => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   };
 
-  useEffect(scrollToBottom, [messages, loading]);
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages, loading]);
 
-  // ---- Helpers for conversation updates ----
+  // ---- Helpers ----
+  const updateConversation = (
+    convId: string,
+    updater: (c: Conversation) => Conversation
+  ) => {
+    setConversations((prev) =>
+      prev.map((c) => (c.id === convId ? updater(c) : c))
+    );
+  };
+
   const updateConversationMessages = (
     convId: string,
     updater: (msgs: Message[]) => Message[]
   ) => {
-    setConversations((prev) =>
-      prev.map((c) =>
-        c.id === convId ? { ...c, messages: updater(c.messages) } : c
-      )
-    );
+    updateConversation(convId, (c) => ({
+      ...c,
+      messages: updater(c.messages),
+    }));
   };
 
   const addMessageToActive = (msg: Message) => {
@@ -107,6 +126,22 @@ const App: React.FC = () => {
     );
   };
 
+  const addPdfToActive = (fileName: string) => {
+    if (!activeConversation) return;
+    updateConversation(activeConversation.id, (c) => {
+      if (c.pdfs.includes(fileName)) return c;
+      return { ...c, pdfs: [...c.pdfs, fileName] };
+    });
+  };
+
+  const removePdfFromActive = (fileName: string) => {
+    if (!activeConversation) return;
+    updateConversation(activeConversation.id, (c) => ({
+      ...c,
+      pdfs: c.pdfs.filter((n) => n !== fileName),
+    }));
+  };
+
   // ---- Send message ----
   const sendMessage = async () => {
     if (!input.trim() || loading || !activeConversation) return;
@@ -123,7 +158,11 @@ const App: React.FC = () => {
       const res = await fetch(ASK_API_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question: text }),
+        body: JSON.stringify({
+          question: text,
+          // always send current chat's PDFs (can be [])
+          sources: activeConversation.pdfs,
+        }),
       });
 
       const data = await res.json();
@@ -133,8 +172,7 @@ const App: React.FC = () => {
       };
 
       addMessageToActive(botMsg);
-    } catch (error) {
-      console.error("Error connecting to server:", error);
+    } catch {
       addMessageToActive({
         sender: "bot",
         text: "⚠️ Error connecting to server.",
@@ -161,6 +199,7 @@ const App: React.FC = () => {
       title: "New chat",
       createdAt: Date.now(),
       messages: [],
+      pdfs: [],
     };
     setConversations((prev) => [conv, ...prev]);
     setActiveId(conv.id);
@@ -173,8 +212,32 @@ const App: React.FC = () => {
     setInput("");
   };
 
+  // ---- Delete conversation (chat tab) ----
+  const deleteConversation = (id: string) => {
+    setConversations((prev) => {
+      const filtered = prev.filter((c) => c.id !== id);
+      if (filtered.length === 0) {
+        const newConv: Conversation = {
+          id: crypto.randomUUID(),
+          title: "New chat",
+          createdAt: Date.now(),
+          messages: [],
+          pdfs: [],
+        };
+        setActiveId(newConv.id);
+        return [newConv];
+      } else {
+        if (activeId === id) {
+          setActiveId(filtered[0].id);
+        }
+        return filtered;
+      }
+    });
+  };
+
   // ---- File upload ----
   const handleFileUploadClick = () => {
+    if (uploading) return;
     fileInputRef.current?.click();
   };
 
@@ -216,17 +279,44 @@ const App: React.FC = () => {
           sender: "bot",
           text: `✅ "${file.name}" uploaded and processed. You can now ask questions about it.`,
         });
+        addPdfToActive(file.name); // attach to this chat only
       }
-    } catch (error) {
-      console.error("Upload error:", error);
+    } catch {
       addMessageToActive({
         sender: "bot",
         text: "⚠️ Upload failed. Server error.",
       });
     } finally {
       setUploading(false);
-      // reset input so same file can be re-selected if needed
       if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  };
+
+  // ---- Optional: reset backend PDFs + index (globally) ----
+  const resetBackend = async () => {
+    if (!window.confirm("Delete ALL PDFs and reset the knowledge base?"))
+      return;
+    setResetting(true);
+    try {
+      const res = await fetch(RESET_API_URL, { method: "DELETE" });
+      const data = await res.json();
+
+      addMessageToActive({
+        sender: "bot",
+        text:
+          data.message ||
+          "🗑 All PDFs and vector index deleted. Upload new PDFs to start again.",
+      });
+
+      // Clear all conversations' pdf lists
+      setConversations((prev) => prev.map((c) => ({ ...c, pdfs: [] })));
+    } catch {
+      addMessageToActive({
+        sender: "bot",
+        text: "⚠️ Failed to reset backend.",
+      });
+    } finally {
+      setResetting(false);
     }
   };
 
@@ -275,11 +365,9 @@ const App: React.FC = () => {
               {conversations.map((conv) => {
                 const isActive = conv.id === activeConversation?.id;
                 return (
-                  <button
+                  <div
                     key={conv.id}
-                    type="button"
-                    onClick={() => switchConversation(conv.id)}
-                    className={`w-full text-left px-4 py-3 text-xs border-b border-slate-800/30 flex flex-col gap-0.5 transition ${
+                    className={`flex items-center justify-between px-3 py-2 text-xs border-b border-slate-800/30 transition ${
                       isActive
                         ? isDark
                           ? "bg-slate-800 text-slate-50"
@@ -289,12 +377,28 @@ const App: React.FC = () => {
                         : "hover:bg-slate-100 text-slate-700"
                     }`}
                   >
-                    <span className="font-medium truncate">{conv.title}</span>
-                    <span className="text-[10px] opacity-70">
-                      {conv.messages.length} message
-                      {conv.messages.length === 1 ? "" : "s"}
-                    </span>
-                  </button>
+                    <button
+                      type="button"
+                      onClick={() => switchConversation(conv.id)}
+                      className="flex-1 text-left"
+                    >
+                      <div className="font-medium truncate">{conv.title}</div>
+                      <div className="text-[10px] opacity-70">
+                        {conv.messages.length} message
+                        {conv.messages.length === 1 ? "" : "s"}
+                      </div>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        deleteConversation(conv.id);
+                      }}
+                      className="ml-2 text-[11px] opacity-70 hover:opacity-100"
+                    >
+                      🗑
+                    </button>
+                  </div>
                 );
               })}
             </div>
@@ -319,35 +423,25 @@ const App: React.FC = () => {
                   </span>
                 </div>
                 <p className="text-[11px] md:text-xs opacity-70">
-                  Ask questions about your uploaded PDFs. Only relevant chunks
-                  are sent to the LLM.
+                  Ask questions about your uploaded PDFs. Each chat can have its
+                  own attached PDFs.
                 </p>
               </div>
 
               <div className="flex items-center gap-2">
-                {/* Upload button */}
+                {/* Optional: reset backend (global) */}
                 <button
                   type="button"
-                  onClick={handleFileUploadClick}
-                  disabled={uploading}
-                  className={`text-xs md:text-sm px-3 py-1.5 rounded-full flex items-center gap-1 border transition ${
-                    uploading
-                      ? "border-slate-500/40 text-slate-400 cursor-wait"
-                      : isDark
-                      ? "border-slate-600 text-slate-100 hover:bg-slate-800/80"
-                      : "border-slate-300 text-slate-800 hover:bg-slate-100"
+                  onClick={resetBackend}
+                  disabled={resetting}
+                  className={`hidden sm:inline-flex text-xs md:text-sm px-3 py-1.5 rounded-full border flex items-center gap-1 transition ${
+                    resetting
+                      ? "border-amber-500/40 text-amber-300 cursor-wait"
+                      : "border-amber-500/40 text-amber-300 hover:bg-amber-500/10"
                   }`}
                 >
-                  <span>📎</span>
-                  <span>{uploading ? "Uploading…" : "Upload PDF"}</span>
+                  🗑 Reset PDFs
                 </button>
-                <input
-                  type="file"
-                  ref={fileInputRef}
-                  className="hidden"
-                  accept="application/pdf"
-                  onChange={handleFileChange}
-                />
 
                 {/* Clear chat */}
                 <button
@@ -373,6 +467,33 @@ const App: React.FC = () => {
                 </button>
               </div>
             </div>
+
+            {/* Attached PDFs for this chat */}
+            {activeConversation?.pdfs?.length > 0 && (
+              <div className="mb-3 flex flex-wrap items-center gap-2 text-[11px] md:text-xs">
+                <span className="opacity-70">Sources for this chat:</span>
+                {activeConversation.pdfs.map((name) => (
+                  <span
+                    key={name}
+                    className={`inline-flex items-center gap-1 px-2 py-1 rounded-full border text-xs max-w-[180px] md:max-w-[220px] truncate ${
+                      isDark
+                        ? "border-slate-600 bg-slate-900/70 text-slate-100"
+                        : "border-slate-300 bg-white text-slate-800"
+                    }`}
+                    title={name}
+                  >
+                    <span className="truncate">{name}</span>
+                    <button
+                      type="button"
+                      className="ml-1 text-[11px] opacity-70 hover:opacity-100"
+                      onClick={() => removePdfFromActive(name)}
+                    >
+                      ✕
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
 
             {/* Chat Window */}
             <div
@@ -444,8 +565,34 @@ const App: React.FC = () => {
               <div ref={chatEndRef} />
             </div>
 
-            {/* Input Bar */}
+            {/* Input Bar with pin icon */}
             <div className="mt-4 flex gap-2 items-center">
+              {/* Pin (upload) button */}
+              <button
+                type="button"
+                onClick={handleFileUploadClick}
+                disabled={uploading}
+                className={`w-10 h-10 rounded-full flex items-center justify-center border text-lg transition
+                  ${
+                    uploading
+                      ? "border-slate-500/40 text-slate-400 cursor-wait"
+                      : isDark
+                      ? "border-slate-600 text-slate-100 hover:bg-slate-800/80"
+                      : "border-slate-300 text-slate-700 hover:bg-slate-100"
+                  }`}
+                title="Upload PDF"
+              >
+                📎
+              </button>
+              <input
+                type="file"
+                ref={fileInputRef}
+                className="hidden"
+                accept="application/pdf"
+                onChange={handleFileChange}
+              />
+
+              {/* Text input */}
               <input
                 className={`flex-1 rounded-2xl px-4 py-2.5 text-sm md:text-[15px] outline-none border transition ${
                   isDark
@@ -458,6 +605,8 @@ const App: React.FC = () => {
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
               />
+
+              {/* Send button */}
               <button
                 type="button"
                 onClick={sendMessage}

@@ -22,6 +22,6 @@ def get_retriever():
 
     retriever = vectordb.as_retriever(
         search_type="similarity",
-        search_kwargs={"k": 4},  # top 4 relevant chunks
+        search_kwargs={"k": 10},  # top 10 relevant chunks
     )
     return retriever
