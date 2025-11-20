@@ -128,8 +128,15 @@ def ask_question(payload: Question) -> Dict:
 
     # 1) Retrieve relevant chunks
     docs = retriever.get_relevant_documents(question)
+    print("[ask] Retrieved", len(docs), "documents for question:", question)
+
+    for i, d in enumerate(docs[:3]):
+        print(f"[ask] Doc {i} snippet:", (d.page_content or "").replace("\n", " ")[:200])
+        print(f"[ask] Doc {i} metadata:", getattr(d, "metadata", {}))
+
     if not docs:
         return {"answer": "I couldn't find anything in the documents.", "sources": []}
+
 
     # 2) Build context
     context_parts: List[str] = []
@@ -143,7 +150,11 @@ def ask_question(payload: Question) -> Dict:
 
     # 3) Build prompt for Groq
     prompt = f"""
-You are a helpful assistant that answers questions using ONLY the context given.
+You are a helpful assistant. Use the document context below to answer the question.
+
+- Prefer using the context when it is relevant.
+- If the context is only partially relevant, still answer as well as you can and say when you are unsure.
+- Only if the context is completely unrelated to the question, say: "I don't know based on this document."
 
 Context:
 {context_text}
@@ -151,7 +162,7 @@ Context:
 Question:
 {question}
 
-Answer clearly and concisely. If the answer is not in the context, say you don't know.
+Answer in a clear paragraph:
 """.strip()
 
     # 4) Call Groq LLM directly
