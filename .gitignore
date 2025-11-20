@@ -82,3 +82,7 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+
+#PDF and upload data folders
+backend/data/pdfs/
+backend/data/uploads/

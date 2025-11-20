@@ -1,34 +1,27 @@
-from langchain_community.vectorstores import Chroma
+import os
 from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain_groq import ChatGroq
-from langchain.chains import RetrievalQA
-from config import GROQ_API_KEY, CHROMA_DB_DIR
+from langchain_community.vectorstores import Chroma
 
-def load_rag_pipeline():
-    llm = ChatGroq(
-        groq_api_key=GROQ_API_KEY,
-        model_name="llama-3.3-70b-versatile",
-        temperature=0
-    )
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+CHROMA_DIR = os.path.join(BASE_DIR, "data", "chroma")
 
 
+def get_retriever():
+    """
+    Returns a LangChain retriever that pulls the most relevant chunks
+    from the Chroma vector store.
+    """
     embeddings = HuggingFaceEmbeddings(
         model_name="sentence-transformers/all-MiniLM-L6-v2"
     )
 
-
     vectordb = Chroma(
-        persist_directory=CHROMA_DB_DIR,
-        embedding_function=embeddings
+        persist_directory=CHROMA_DIR,
+        embedding_function=embeddings,
     )
 
-    retriever = vectordb.as_retriever(search_kwargs={"k": 4})
-
-    qa_chain = RetrievalQA.from_chain_type(
-        llm=llm,
-        retriever=retriever,
-        chain_type="stuff",
-        return_source_documents=True
+    retriever = vectordb.as_retriever(
+        search_type="similarity",
+        search_kwargs={"k": 4},  # top 4 relevant chunks
     )
-
-    return qa_chain
+    return retriever
