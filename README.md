@@ -7,7 +7,7 @@ A full-stack **Retrieval Augmented Generation (RAG)** chatbot application built 
 - **Groq LLMs**
 - **ChromaDB** vector store
 - **React + Vite + TypeScript** frontend
-- **TailwindCSS (CDN)** for styling
+- **TailwindCSS** for styling
 
 Features include **PDF upload**, **document ingestion**, and **chat answering using your documents**.
 
@@ -39,13 +39,13 @@ pip install python-multipart chromadb groq langchain langchain-community langcha
 
 ### Step 3 — Add your API key
 
-Create a `.env` file inside `backend/`:
+Create a `.env` file in the project root from `.env.example`:
 
 ```
 GROQ_API_KEY=your_key_here
 ```
 
-(Do NOT commit this file.)
+(Do NOT commit this file.) Set `CORS_ORIGINS` to the exact URL of your deployed frontend; it is a comma-separated list.
 
 ### Step 4 — Add PDFs for ingestion
 
@@ -131,13 +131,10 @@ The frontend provides:
 
 Enjoy building with RAG!
 
-```
+## Production notes
 
----
-
-Let me know if you want:
-
-📌 A short version
-📌 A more professional version
-📌 A deployment-ready version (Railway + Vercel)
-```
+- Build the frontend with `npm run build`, then serve `frontend-react/dist` from a static web server or CDN.
+- Set `VITE_API_BASE_URL` at build time to the public API URL (or `/api` behind a reverse proxy).
+- Run the API without reload, for example: `uvicorn app:app --host 0.0.0.0 --port 8000` from `backend/`.
+- The reset route is intended for the local single-user app. Add authentication before exposing it publicly.
+- Uploaded documents are shared by every client of this simple deployment. Add tenant isolation and authentication before using it for multiple users.

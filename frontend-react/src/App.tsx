@@ -3,6 +3,15 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 interface Message {
   sender: "user" | "bot";
   text: string;
+  visualization?: Visualization;
+}
+
+interface Visualization {
+  kind: "bar";
+  title: string;
+  labels: string[];
+  values: number[];
+  summary: string;
 }
 
 interface Conversation {
@@ -13,10 +22,16 @@ interface Conversation {
   pdfs: string[]; // attached PDFs for this chat
 }
 
-const ASK_API_URL = "http://localhost:8000/ask";
-const UPLOAD_API_URL = "http://localhost:8000/upload";
-const RESET_API_URL = "http://localhost:8000/reset"; // optional, keep if you added reset
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000").replace(/\/$/, "");
+const ASK_API_URL = `${API_BASE_URL}/ask`;
+const UPLOAD_API_URL = `${API_BASE_URL}/upload`;
+const RESET_API_URL = `${API_BASE_URL}/reset`;
 const THEME_KEY = "rag-theme";
+
+const errorMessage = async (response: Response) => {
+  const payload = await response.json().catch(() => null);
+  return payload?.detail || payload?.error || "The server returned an unexpected error.";
+};
 
 const App: React.FC = () => {
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -165,17 +180,21 @@ const App: React.FC = () => {
         }),
       });
 
+      if (!res.ok) {
+        throw new Error(await errorMessage(res));
+      }
       const data = await res.json();
       const botMsg: Message = {
         sender: "bot",
         text: data.answer || "No response from server.",
+        visualization: data.visualization ?? undefined,
       };
 
       addMessageToActive(botMsg);
-    } catch {
+    } catch (error) {
       addMessageToActive({
         sender: "bot",
-        text: "⚠️ Error connecting to server.",
+        text: `⚠️ ${error instanceof Error ? error.message : "Error connecting to server."}`,
       });
     } finally {
       setLoading(false);
@@ -245,7 +264,7 @@ const App: React.FC = () => {
     const file = e.target.files?.[0];
     if (!file || !activeConversation) return;
 
-    if (file.type !== "application/pdf") {
+    if (file.type !== "application/pdf" || !file.name.toLowerCase().endsWith(".pdf")) {
       addMessageToActive({
         sender: "bot",
         text: "❌ Please upload only PDF files.",
@@ -267,24 +286,19 @@ const App: React.FC = () => {
         method: "POST",
         body: formData,
       });
-      const data = await res.json();
-
-      if (data.error) {
-        addMessageToActive({
-          sender: "bot",
-          text: `❌ Upload failed: ${data.error}`,
-        });
-      } else {
-        addMessageToActive({
-          sender: "bot",
-          text: `✅ "${file.name}" uploaded and processed. You can now ask questions about it.`,
-        });
-        addPdfToActive(file.name); // attach to this chat only
+      if (!res.ok) {
+        throw new Error(await errorMessage(res));
       }
-    } catch {
+      const data = await res.json();
       addMessageToActive({
         sender: "bot",
-        text: "⚠️ Upload failed. Server error.",
+        text: `✅ "${data.filename ?? file.name}" uploaded and processed. You can now ask questions about it.`,
+      });
+      addPdfToActive(data.filename ?? file.name);
+    } catch (error) {
+      addMessageToActive({
+        sender: "bot",
+        text: `⚠️ Upload failed: ${error instanceof Error ? error.message : "Server error."}`,
       });
     } finally {
       setUploading(false);
@@ -299,6 +313,9 @@ const App: React.FC = () => {
     setResetting(true);
     try {
       const res = await fetch(RESET_API_URL, { method: "DELETE" });
+      if (!res.ok) {
+        throw new Error(await errorMessage(res));
+      }
       const data = await res.json();
 
       addMessageToActive({
@@ -310,10 +327,10 @@ const App: React.FC = () => {
 
       // Clear all conversations' pdf lists
       setConversations((prev) => prev.map((c) => ({ ...c, pdfs: [] })));
-    } catch {
+    } catch (error) {
       addMessageToActive({
         sender: "bot",
-        text: "⚠️ Failed to reset backend.",
+        text: `⚠️ Failed to reset backend: ${error instanceof Error ? error.message : "Server error."}`,
       });
     } finally {
       setResetting(false);
@@ -434,7 +451,7 @@ const App: React.FC = () => {
                   type="button"
                   onClick={resetBackend}
                   disabled={resetting}
-                  className={`hidden sm:inline-flex text-xs md:text-sm px-3 py-1.5 rounded-full border flex items-center gap-1 transition ${
+                  className={`hidden sm:inline-flex text-xs md:text-sm px-3 py-1.5 rounded-full border items-center gap-1 transition ${
                     resetting
                       ? "border-amber-500/40 text-amber-300 cursor-wait"
                       : "border-amber-500/40 text-amber-300 hover:bg-amber-500/10"
@@ -511,14 +528,15 @@ const App: React.FC = () => {
                 >
                   👋 Start by uploading a PDF or asking a question like{" "}
                   <span className="italic">
-                    &ldquo;Summarize the main points of the latest
-                    document.&rdquo;
+                    &ldquo;Summarize this document&rdquo; or &ldquo;Create a chart from
+                    its statistics.&rdquo;
                   </span>
                 </div>
               )}
 
               {messages.map((msg, i) => {
                 const isUser = msg.sender === "user";
+                const maximum = Math.max(...(msg.visualization?.values ?? [1]));
                 return (
                   <div
                     key={i}
@@ -527,7 +545,7 @@ const App: React.FC = () => {
                     } animate-[fadeIn_0.25s_ease-out]`}
                   >
                     <div
-                      className={`max-w-[80%] rounded-2xl px-4 py-2 text-sm md:text-[15px] shadow-sm transition-transform duration-200 hover:-translate-y-[1px] ${
+                      className={`max-w-[80%] rounded-2xl px-4 py-2 text-sm md:text-[15px] shadow-sm transition-transform duration-200 hover:-translate-y-px ${
                         isUser
                           ? isDark
                             ? "bg-blue-600 text-white rounded-br-sm"
@@ -538,6 +556,25 @@ const App: React.FC = () => {
                       }`}
                     >
                       {msg.text}
+                      {!isUser && msg.visualization && (
+                        <div className={`mt-3 rounded-xl border p-3 ${isDark ? "border-slate-600 bg-slate-900/60" : "border-slate-200 bg-slate-50"}`}>
+                          <div className="mb-2 font-semibold text-xs">{msg.visualization.title}</div>
+                          <div className="space-y-2">
+                            {msg.visualization.labels.map((label, chartIndex) => {
+                              const value = msg.visualization?.values[chartIndex] ?? 0;
+                              return (
+                                <div key={`${label}-${chartIndex}`} className="text-xs">
+                                  <div className="mb-1 flex justify-between gap-3"><span className="truncate">{label}</span><span>{value.toLocaleString()}</span></div>
+                                  <div className={`h-2 overflow-hidden rounded-full ${isDark ? "bg-slate-700" : "bg-slate-200"}`}>
+                                    <div className="h-full rounded-full bg-emerald-500" style={{ width: `${Math.max(0, Math.min(100, (value / maximum) * 100))}%` }} />
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                          {msg.visualization.summary && <p className="mt-3 text-xs opacity-75">{msg.visualization.summary}</p>}
+                        </div>
+                      )}
                     </div>
                   </div>
                 );

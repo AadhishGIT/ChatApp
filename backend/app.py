@@ -1,211 +1,230 @@
+import logging
 import os
 import shutil
-import subprocess
-import logging
-from typing import Dict, List, Any, Optional
-import os
+import threading
+from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Any
+
+from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.concurrency import run_in_threadpool
+from fastapi.middleware.cors import CORSMiddleware
+from groq import Groq
+from pydantic import BaseModel, Field
+
+from config import CHROMA_DIR, MAX_QUESTION_LENGTH, MAX_UPLOAD_BYTES, PDF_DIR, cors_origins
+from ingest import ingest_documents
+from rag_pipeline import DocumentStore, get_store
 
 logging.getLogger("chromadb.telemetry").setLevel(logging.ERROR)
-logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO").upper())
 
-from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from dotenv import load_dotenv
-from groq import Groq
+store: DocumentStore | None = None
+groq_client: Groq | None = None
+index_lock = threading.RLock()
 
-from rag_pipeline import get_retriever
-
-# ---- Env & paths ----
-load_dotenv()
-
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-PDF_DIR = os.path.join(BASE_DIR, "data", "pdfs")
-INGEST_SCRIPT = os.path.join(BASE_DIR, "ingest.py")
-
-os.makedirs(PDF_DIR, exist_ok=True)
-
-# ---- FastAPI app ----
-app = FastAPI(title="RAG ChatApp Backend")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-    allow_credentials=True,
-)
-
-# ---- Global objects ----
-retriever = None
-groq_client = None
 
 class Question(BaseModel):
-    question: str
-    # list of PDF filenames that this chat is allowed to use
-    sources: Optional[List[str]] = None
-
-def load_retriever():
-    global retriever
-    print("[app] Loading retriever from Chroma...")
-    retriever = get_retriever()
-    print("[app] Retriever loaded.")
+    question: str = Field(min_length=1, max_length=MAX_QUESTION_LENGTH)
+    sources: list[str] | None = Field(default=None, max_length=100)
 
 
-def load_groq_client():
-    global groq_client
-    groq_api_key = os.getenv("GROQ_API_KEY")
-    if not groq_api_key:
-        raise RuntimeError("GROQ_API_KEY not set in environment or .env")
-    groq_client = Groq(api_key=groq_api_key)
-    print("[app] Groq client initialized.")
+class Visualization(BaseModel):
+    kind: str = Field(pattern="^bar$")
+    title: str = Field(min_length=1, max_length=120)
+    labels: list[str] = Field(min_length=1, max_length=12)
+    values: list[float] = Field(min_length=1, max_length=12)
+    summary: str = Field(default="", max_length=500)
 
 
-@app.on_event("startup")
-def startup_event():
-    load_groq_client()
-    load_retriever()
+def load_services() -> None:
+    global store, groq_client
+    # Loading the embedding model can require a large local cache/download. Keep
+    # startup responsive and initialize the search store on the first real query.
+    store = None
+    api_key = os.getenv("GROQ_API_KEY")
+    groq_client = Groq(api_key=api_key) if api_key else None
+    if not api_key:
+        logger.warning("GROQ_API_KEY is not configured; /ask will be unavailable")
 
 
-def run_ingest_blocking():
-    """
-    Run ingest.py synchronously and reload the retriever afterwards.
-    """
-    print("[app] Running ingestion...")
-    python_exec = os.environ.get("PYTHON_EXECUTABLE", "python3")
-    result = subprocess.run(
-        [python_exec, INGEST_SCRIPT],
-        capture_output=True,
-        text=True,
-    )
-    print(result.stdout)
-    if result.returncode != 0:
-        print(result.stderr)
-        raise RuntimeError("Ingestion failed")
-    load_retriever()
-    print("[app] Ingestion and retriever reload complete.")
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    PDF_DIR.mkdir(parents=True, exist_ok=True)
+    CHROMA_DIR.parent.mkdir(parents=True, exist_ok=True)
+    load_services()
+    yield
 
 
-@app.post("/upload")
-async def upload_pdf(file: UploadFile = File(...)) -> Dict:
-    """
-    Upload a PDF, save to data/pdfs, then re-run ingestion and reload retriever.
-    """
-    if not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="Only PDF files allowed")
+app = FastAPI(title="RAG ChatApp API", version="1.0.0", lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=cors_origins(),
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "DELETE"],
+    allow_headers=["Content-Type"],
+)
 
-    save_path = os.path.join(PDF_DIR, file.filename)
 
+def _safe_pdf_name(filename: str | None) -> str:
+    name = Path(filename or "").name
+    if not name or name in {".", ".."} or not name.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only PDF files with a valid filename are allowed")
+    return name
+
+
+def _is_pdf(upload: UploadFile, initial_bytes: bytes) -> bool:
+    return upload.content_type in {"application/pdf", "application/x-pdf"} and initial_bytes.startswith(b"%PDF-")
+
+
+def _rebuild_index() -> int:
+    global store
+    with index_lock:
+        count = ingest_documents()
+        store = get_store()
+        return count
+
+
+def _search(question: str, sources: list[str] | None):
+    global store
+    with index_lock:
+        if store is None:
+            store = get_store()
+        return store.search(question, sources)
+
+
+def _parse_completion(content: str | None) -> tuple[str, dict[str, Any] | None]:
+    """Accept the structured response while gracefully handling model drift."""
+    import json
+
+    if not content:
+        return "I could not generate an answer.", None
     try:
-        with open(save_path, "wb") as f:
-            shutil.copyfileobj(file.file, f)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to save file: {e}")
+        parsed = json.loads(content)
+        answer = str(parsed.get("answer", "")).strip()
+        visual = parsed.get("visualization")
+        if not answer:
+            raise ValueError("missing answer")
+        if visual and (
+            not isinstance(visual, dict)
+            or visual.get("kind") != "bar"
+            or not isinstance(visual.get("labels"), list)
+            or not isinstance(visual.get("values"), list)
+            or len(visual["labels"]) != len(visual["values"])
+            or not 1 <= len(visual["labels"]) <= 12
+        ):
+            visual = None
+        return answer, visual
+    except (ValueError, TypeError, json.JSONDecodeError):
+        return content.strip(), None
 
+
+@app.get("/health")
+def health() -> dict[str, Any]:
+    return {"status": "ok", "llmConfigured": groq_client is not None}
+
+
+@app.post("/upload", status_code=201)
+async def upload_pdf(file: UploadFile = File(...)) -> dict[str, Any]:
+    filename = _safe_pdf_name(file.filename)
+    destination = PDF_DIR / filename
+    temporary = PDF_DIR / f".{filename}.uploading"
+    previous = PDF_DIR / f".{filename}.previous"
+    total = 0
+    replaced_existing = False
     try:
-        run_ingest_blocking()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Ingestion failed: {e}")
+        with temporary.open("wb") as output:
+            first_chunk = await file.read(8192)
+            if not _is_pdf(file, first_chunk):
+                raise HTTPException(status_code=400, detail="The uploaded file is not a valid PDF")
+            output.write(first_chunk)
+            total += len(first_chunk)
+            while chunk := await file.read(1024 * 1024):
+                total += len(chunk)
+                if total > MAX_UPLOAD_BYTES:
+                    raise HTTPException(status_code=413, detail="PDF exceeds the upload size limit")
+                output.write(chunk)
+        if destination.exists():
+            previous.unlink(missing_ok=True)
+            os.replace(destination, previous)
+            replaced_existing = True
+        os.replace(temporary, destination)
+        chunks = await run_in_threadpool(_rebuild_index)
+    except HTTPException:
+        temporary.unlink(missing_ok=True)
+        raise
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        if replaced_existing and previous.exists():
+            destination.unlink(missing_ok=True)
+            os.replace(previous, destination)
+        logger.exception("Failed to upload or index %s", filename)
+        raise HTTPException(status_code=500, detail="The PDF could not be indexed")
+    finally:
+        previous.unlink(missing_ok=True)
+        await file.close()
+    return {"message": "PDF uploaded and indexed", "filename": filename, "chunks": chunks, "ready": True}
 
-    return {
-        "message": "PDF uploaded and processed successfully",
-        "filename": file.filename,
-        "ready": True,
-    }
+
+@app.delete("/reset")
+async def reset() -> dict[str, str]:
+    # This endpoint is intentionally unauthenticated for the local single-user app.
+    # Protect it with authentication before exposing the service publicly.
+    def clear() -> None:
+        global store
+        with index_lock:
+            shutil.rmtree(PDF_DIR, ignore_errors=True)
+            shutil.rmtree(CHROMA_DIR, ignore_errors=True)
+            PDF_DIR.mkdir(parents=True, exist_ok=True)
+            store = None
+
+    await run_in_threadpool(clear)
+    return {"message": "All PDFs and the vector index were reset."}
 
 
 @app.post("/ask")
-def ask_question(payload: Question) -> Dict:
-    """
-    Retrieve relevant chunks and send ONLY those to Groq LLM.
-    Optionally restrict to specific PDF filenames from `payload.sources`.
-    """
-    global retriever, groq_client
-    if retriever is None or groq_client is None:
-        raise HTTPException(status_code=503, detail="Backend not initialized")
-
+async def ask_question(payload: Question) -> dict[str, Any]:
     question = payload.question.strip()
     if not question:
         raise HTTPException(status_code=400, detail="Question is required")
+    if groq_client is None:
+        raise HTTPException(status_code=503, detail="The language model is not configured")
 
-    # 1) Retrieve relevant chunks
-    docs = retriever.get_relevant_documents(question)
-    print("[ask] Retrieved", len(docs), "documents for question:", question)
-
-    # Only filter if we actually have at least one selected PDF
-    if payload.sources:
-        allowed = set(payload.sources)
-        filtered_docs = []
-        for d in docs:
-            meta = getattr(d, "metadata", {}) or {}
-            src_path = meta.get("source", "")
-            name = os.path.basename(src_path) if src_path else ""
-            if name in allowed:
-                filtered_docs.append(d)
-        docs = filtered_docs
-        print("[ask] After source filter, remaining docs:", len(docs))
-
-
-    for i, d in enumerate(docs[:3]):
-        print(f"[ask] Doc {i} snippet:", (d.page_content or "").replace("\n", " ")[:200])
-        print(f"[ask] Doc {i} metadata:", getattr(d, "metadata", {}))
-
-    if not docs:
-        return {
-            "answer": "I couldn't find anything in the selected PDFs for this question.",
-            "sources": [],
-        }
-
-    # 2) Build context
-    context_parts: List[str] = []
-    sources: List[Dict] = []
-
-    for d in docs:
-        context_parts.append(d.page_content)
-        sources.append(getattr(d, "metadata", {}) or {})
-
-    context_text = "\n\n---\n\n".join(context_parts)
-
-    # 3) Build prompt for Groq
-    prompt = f"""
-    You are a helpful assistant. Use the document context below to answer the question.
-
-    - The context may come from multiple documents.
-    - Combine information from different parts of the context when helpful.
-    - Prefer using the context when it is relevant.
-    - If the context is only partially relevant, still answer as well as you can and say when you are unsure.
-    - Only if the context is completely unrelated to the question, say: "I don't know based on this document."
-
-    Context:
-    {context_text}
-
-    Question:
-    {question}
-
-    Answer in a clear paragraph:
-    """.strip()
-
-    # 4) Call Groq LLM directly
+    selected_sources = list(dict.fromkeys(_safe_pdf_name(source) for source in payload.sources or []))
     try:
-        completion = groq_client.chat.completions.create(
-            model="llama-3.1-8b-instant",
-            messages=[
-                {"role": "system", "content": "You are a precise RAG assistant."},
-                {"role": "user", "content": prompt},
-            ],
-        )
-        answer = completion.choices[0].message.content
-        print("[ask] LLM raw answer:", answer)
-    except Exception as e:
-        print("[app:/ask] Groq error:", e)
-        raise HTTPException(status_code=500, detail="LLM call failed")
+        docs = await run_in_threadpool(_search, question, selected_sources or None)
+    except Exception:
+        logger.exception("Document retrieval failed")
+        raise HTTPException(status_code=503, detail="Document search is temporarily unavailable")
+    if not docs:
+        return {"answer": "I couldn't find relevant information in the selected PDFs.", "sources": []}
 
+    context = "\n\n---\n\n".join(doc.page_content for doc in docs)
+    prompt = (
+        "Answer only from the supplied document context. If the answer is not present, "
+        "say you do not know based on these documents. Return a JSON object with exactly "
+        "two keys: `answer` (a clear grounded answer) and `visualization`. Set visualization "
+        "to null unless the user asks for a chart, graph, visual statistics, distribution, or "
+        "comparison AND the context contains reliable numeric values. When it is appropriate, "
+        "visualization must be an object with kind (`bar`), title, labels (1-12 short "
+        "strings), values (same-length numbers), and summary. Never invent data.\n\n"
+        f"Document context:\n{context}\n\nQuestion: {question}"
+    )
+    try:
+        completion = await run_in_threadpool(
+            groq_client.chat.completions.create,
+            model=os.getenv("GROQ_MODEL", "llama-3.1-8b-instant"),
+            messages=[{"role": "system", "content": "You are a precise document assistant."}, {"role": "user", "content": prompt}],
+            temperature=0.2,
+            response_format={"type": "json_object"},
+        )
+        answer, visualization = _parse_completion(completion.choices[0].message.content)
+    except Exception:
+        logger.exception("LLM request failed")
+        raise HTTPException(status_code=502, detail="The language model request failed")
     return {
         "answer": answer,
-        "sources": sources,
+        "sources": [doc.metadata for doc in docs],
+        "visualization": visualization,
     }
-
-
-@app.get("/")
-def root():
-    return {"message": "RAG ChatApp backend running"}
