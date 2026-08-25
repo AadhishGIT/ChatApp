@@ -22,7 +22,9 @@ interface Conversation {
   pdfs: string[]; // attached PDFs for this chat
 }
 
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000").replace(/\/$/, "");
+const API_BASE_URL = (
+  import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000"
+).replace(/\/$/, "");
 const ASK_API_URL = `${API_BASE_URL}/ask`;
 const UPLOAD_API_URL = `${API_BASE_URL}/upload`;
 const RESET_API_URL = `${API_BASE_URL}/reset`;
@@ -30,7 +32,11 @@ const THEME_KEY = "rag-theme";
 
 const errorMessage = async (response: Response) => {
   const payload = await response.json().catch(() => null);
-  return payload?.detail || payload?.error || "The server returned an unexpected error.";
+  return (
+    payload?.detail ||
+    payload?.error ||
+    "The server returned an unexpected error."
+  );
 };
 
 const App: React.FC = () => {
@@ -54,7 +60,7 @@ const App: React.FC = () => {
       setIsDark(true);
     } else {
       const prefersDark = window.matchMedia?.(
-        "(prefers-color-scheme: dark)"
+        "(prefers-color-scheme: dark)",
       ).matches;
       setIsDark(prefersDark);
     }
@@ -82,12 +88,12 @@ const App: React.FC = () => {
 
   const activeConversation = useMemo(
     () => conversations.find((c) => c.id === activeId) ?? conversations[0],
-    [conversations, activeId]
+    [conversations, activeId],
   );
 
   const messages = useMemo(
     () => activeConversation?.messages ?? [],
-    [activeConversation]
+    [activeConversation],
   );
 
   const scrollToBottom = () => {
@@ -101,16 +107,16 @@ const App: React.FC = () => {
   // ---- Helpers ----
   const updateConversation = (
     convId: string,
-    updater: (c: Conversation) => Conversation
+    updater: (c: Conversation) => Conversation,
   ) => {
     setConversations((prev) =>
-      prev.map((c) => (c.id === convId ? updater(c) : c))
+      prev.map((c) => (c.id === convId ? updater(c) : c)),
     );
   };
 
   const updateConversationMessages = (
     convId: string,
-    updater: (msgs: Message[]) => Message[]
+    updater: (msgs: Message[]) => Message[],
   ) => {
     updateConversation(convId, (c) => ({
       ...c,
@@ -125,7 +131,7 @@ const App: React.FC = () => {
 
   const renameConversationIfNeeded = (
     convId: string,
-    firstUserMessage: string
+    firstUserMessage: string,
   ) => {
     setConversations((prev) =>
       prev.map((c) =>
@@ -136,8 +142,8 @@ const App: React.FC = () => {
                 firstUserMessage.slice(0, 40) +
                 (firstUserMessage.length > 40 ? "…" : ""),
             }
-          : c
-      )
+          : c,
+      ),
     );
   };
 
@@ -264,7 +270,10 @@ const App: React.FC = () => {
     const file = e.target.files?.[0];
     if (!file || !activeConversation) return;
 
-    if (file.type !== "application/pdf" || !file.name.toLowerCase().endsWith(".pdf")) {
+    if (
+      file.type !== "application/pdf" ||
+      !file.name.toLowerCase().endsWith(".pdf")
+    ) {
       addMessageToActive({
         sender: "bot",
         text: "❌ Please upload only PDF files.",
@@ -390,8 +399,8 @@ const App: React.FC = () => {
                           ? "bg-slate-800 text-slate-50"
                           : "bg-slate-200 text-slate-900"
                         : isDark
-                        ? "hover:bg-slate-900 text-slate-300"
-                        : "hover:bg-slate-100 text-slate-700"
+                          ? "hover:bg-slate-900 text-slate-300"
+                          : "hover:bg-slate-100 text-slate-700"
                     }`}
                   >
                     <button
@@ -422,7 +431,7 @@ const App: React.FC = () => {
 
             <div className="p-3 text-[10px] opacity-60">
               <div>RAG ChatApp</div>
-              <div>Groq · LangChain · Chroma</div>
+              <div>Gemini · LangChain · Chroma</div>
             </div>
           </aside>
 
@@ -436,7 +445,7 @@ const App: React.FC = () => {
                     <span>🤖 RAG Chatbot</span>
                   </h1>
                   <span className="hidden sm:inline text-[10px] md:text-xs px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
-                    Groq · LangChain · Chroma
+                    Gemini · LangChain · Chroma
                   </span>
                 </div>
                 <p className="text-[11px] md:text-xs opacity-70">
@@ -528,8 +537,8 @@ const App: React.FC = () => {
                 >
                   👋 Start by uploading a PDF or asking a question like{" "}
                   <span className="italic">
-                    &ldquo;Summarize this document&rdquo; or &ldquo;Create a chart from
-                    its statistics.&rdquo;
+                    &ldquo;Summarize this document&rdquo; or &ldquo;Create a
+                    chart from its statistics.&rdquo;
                   </span>
                 </div>
               )}
@@ -551,28 +560,52 @@ const App: React.FC = () => {
                             ? "bg-blue-600 text-white rounded-br-sm"
                             : "bg-blue-500 text-white rounded-br-sm"
                           : isDark
-                          ? "bg-slate-800 text-slate-100 rounded-bl-sm"
-                          : "bg-white text-slate-900 rounded-bl-sm border border-slate-200"
+                            ? "bg-slate-800 text-slate-100 rounded-bl-sm"
+                            : "bg-white text-slate-900 rounded-bl-sm border border-slate-200"
                       }`}
                     >
                       {msg.text}
                       {!isUser && msg.visualization && (
-                        <div className={`mt-3 rounded-xl border p-3 ${isDark ? "border-slate-600 bg-slate-900/60" : "border-slate-200 bg-slate-50"}`}>
-                          <div className="mb-2 font-semibold text-xs">{msg.visualization.title}</div>
-                          <div className="space-y-2">
-                            {msg.visualization.labels.map((label, chartIndex) => {
-                              const value = msg.visualization?.values[chartIndex] ?? 0;
-                              return (
-                                <div key={`${label}-${chartIndex}`} className="text-xs">
-                                  <div className="mb-1 flex justify-between gap-3"><span className="truncate">{label}</span><span>{value.toLocaleString()}</span></div>
-                                  <div className={`h-2 overflow-hidden rounded-full ${isDark ? "bg-slate-700" : "bg-slate-200"}`}>
-                                    <div className="h-full rounded-full bg-emerald-500" style={{ width: `${Math.max(0, Math.min(100, (value / maximum) * 100))}%` }} />
-                                  </div>
-                                </div>
-                              );
-                            })}
+                        <div
+                          className={`mt-3 rounded-xl border p-3 ${isDark ? "border-slate-600 bg-slate-900/60" : "border-slate-200 bg-slate-50"}`}
+                        >
+                          <div className="mb-2 font-semibold text-xs">
+                            {msg.visualization.title}
                           </div>
-                          {msg.visualization.summary && <p className="mt-3 text-xs opacity-75">{msg.visualization.summary}</p>}
+                          <div className="space-y-2">
+                            {msg.visualization.labels.map(
+                              (label, chartIndex) => {
+                                const value =
+                                  msg.visualization?.values[chartIndex] ?? 0;
+                                return (
+                                  <div
+                                    key={`${label}-${chartIndex}`}
+                                    className="text-xs"
+                                  >
+                                    <div className="mb-1 flex justify-between gap-3">
+                                      <span className="truncate">{label}</span>
+                                      <span>{value.toLocaleString()}</span>
+                                    </div>
+                                    <div
+                                      className={`h-2 overflow-hidden rounded-full ${isDark ? "bg-slate-700" : "bg-slate-200"}`}
+                                    >
+                                      <div
+                                        className="h-full rounded-full bg-emerald-500"
+                                        style={{
+                                          width: `${Math.max(0, Math.min(100, (value / maximum) * 100))}%`,
+                                        }}
+                                      />
+                                    </div>
+                                  </div>
+                                );
+                              },
+                            )}
+                          </div>
+                          {msg.visualization.summary && (
+                            <p className="mt-3 text-xs opacity-75">
+                              {msg.visualization.summary}
+                            </p>
+                          )}
                         </div>
                       )}
                     </div>
@@ -614,8 +647,8 @@ const App: React.FC = () => {
                     uploading
                       ? "border-slate-500/40 text-slate-400 cursor-wait"
                       : isDark
-                      ? "border-slate-600 text-slate-100 hover:bg-slate-800/80"
-                      : "border-slate-300 text-slate-700 hover:bg-slate-100"
+                        ? "border-slate-600 text-slate-100 hover:bg-slate-800/80"
+                        : "border-slate-300 text-slate-700 hover:bg-slate-100"
                   }`}
                 title="Upload PDF"
               >

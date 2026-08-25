@@ -8,7 +8,8 @@ from io import BytesIO
 from pathlib import Path
 
 import pypdfium2 as pdfium
-from groq import Groq
+from google import genai
+from google.genai import types
 from langchain_core.documents import Document
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import PyPDFLoader
@@ -20,10 +21,10 @@ from rag_pipeline import create_embeddings
 
 def _ocr_scanned_pdf(pdf_path: Path) -> list[Document]:
     """Extract text from image-only PDFs with the configured vision model."""
-    api_key = os.getenv("GROQ_API_KEY")
+    api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
         raise ValueError(
-            f"{pdf_path.name} is image-only and OCR requires GROQ_API_KEY to be configured"
+            f"{pdf_path.name} is image-only and OCR requires GEMINI_API_KEY to be configured"
         )
 
     pdf = pdfium.PdfDocument(str(pdf_path))
@@ -32,7 +33,7 @@ def _ocr_scanned_pdf(pdf_path: Path) -> list[Document]:
             f"{pdf_path.name} is image-only and exceeds the OCR page limit ({OCR_MAX_PAGES})"
         )
 
-    client = Groq(api_key=api_key)
+    client = genai.Client(api_key=api_key)
     documents: list[Document] = []
     for page_number in range(len(pdf)):
         image = pdf[page_number].render(scale=1.8).to_pil().convert("RGB")
@@ -40,27 +41,21 @@ def _ocr_scanned_pdf(pdf_path: Path) -> list[Document]:
         encoded = BytesIO()
         image.save(encoded, format="JPEG", quality=85, optimize=True)
         image_data = base64.b64encode(encoded.getvalue()).decode("ascii")
-        completion = client.chat.completions.create(
+        completion = client.models.generate_content(
             model=OCR_MODEL,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": "Transcribe all readable text from this document page exactly. Preserve headings, names, dates, and bullet points. Return only the transcription.",
-                        },
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": f"data:image/jpeg;base64,{image_data}"},
-                        },
-                    ],
-                }
+            contents=[
+                "Transcribe all readable text from this document page exactly. Preserve headings, names, dates, and bullet points. Return only the transcription.",
+                types.Part.from_bytes(
+                    data=base64.b64decode(image_data),
+                    mime_type="image/jpeg",
+                ),
             ],
-            temperature=0,
-            max_tokens=4000,
+            config=types.GenerateContentConfig(
+                temperature=0,
+                max_output_tokens=4000,
+            ),
         )
-        text = (completion.choices[0].message.content or "").strip()
+        text = (completion.text or "").strip()
         if text:
             documents.append(
                 Document(
@@ -80,7 +75,9 @@ def _ocr_scanned_pdf(pdf_path: Path) -> list[Document]:
 
 def ingest_documents() -> int:
     PDF_DIR.mkdir(parents=True, exist_ok=True)
-    pdf_paths = sorted(path for path in PDF_DIR.iterdir() if path.suffix.lower() == ".pdf")
+    pdf_paths = sorted(
+        path for path in PDF_DIR.iterdir() if path.suffix.lower() == ".pdf"
+    )
     if not pdf_paths:
         raise ValueError("No PDF files are available to index")
 
@@ -105,7 +102,9 @@ def ingest_documents() -> int:
 
     # Build outside the live directory, then replace it only after embeddings and
     # writes succeed. This prevents duplicate chunks and avoids a half-built index.
-    temporary_dir = Path(tempfile.mkdtemp(prefix="chroma-build-", dir=CHROMA_DIR.parent))
+    temporary_dir = Path(
+        tempfile.mkdtemp(prefix="chroma-build-", dir=CHROMA_DIR.parent)
+    )
     backup_dir = CHROMA_DIR.with_name(f"{CHROMA_DIR.name}.previous")
     try:
         Chroma.from_documents(

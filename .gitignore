@@ -3,6 +3,7 @@
 # -----------------------
 
 # Virtual environment
+.venv/
 venv/
 .env
 *.env
@@ -19,6 +20,8 @@ chroma_db/
 data/chroma/
 data/index/
 data/vectorstore/
+backend/data/
+backend/data/**
 
 # Uploaded and processed PDFs
 data/pdfs/
@@ -42,6 +45,7 @@ logs/
 
 # Node modules
 node_modules/
+frontend-react/node_modules/
 
 # Local env files
 .env.development
