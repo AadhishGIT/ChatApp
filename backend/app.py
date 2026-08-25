@@ -9,10 +9,17 @@ from typing import Any
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
-from groq import Groq
+from google import genai
+from google.genai import types
 from pydantic import BaseModel, Field
 
-from config import CHROMA_DIR, MAX_QUESTION_LENGTH, MAX_UPLOAD_BYTES, PDF_DIR, cors_origins
+from config import (
+    CHROMA_DIR,
+    MAX_QUESTION_LENGTH,
+    MAX_UPLOAD_BYTES,
+    PDF_DIR,
+    cors_origins,
+)
 from ingest import ingest_documents
 from rag_pipeline import DocumentStore, get_store
 
@@ -21,7 +28,7 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO").upper())
 
 store: DocumentStore | None = None
-groq_client: Groq | None = None
+gemini_client: genai.Client | None = None
 index_lock = threading.RLock()
 
 
@@ -39,14 +46,14 @@ class Visualization(BaseModel):
 
 
 def load_services() -> None:
-    global store, groq_client
+    global store, gemini_client
     # Loading the embedding model can require a large local cache/download. Keep
     # startup responsive and initialize the search store on the first real query.
     store = None
-    api_key = os.getenv("GROQ_API_KEY")
-    groq_client = Groq(api_key=api_key) if api_key else None
+    api_key = os.getenv("GEMINI_API_KEY")
+    gemini_client = genai.Client(api_key=api_key) if api_key else None
     if not api_key:
-        logger.warning("GROQ_API_KEY is not configured; /ask will be unavailable")
+        logger.warning("GEMINI_API_KEY is not configured; /ask will be unavailable")
 
 
 @asynccontextmanager
@@ -70,12 +77,17 @@ app.add_middleware(
 def _safe_pdf_name(filename: str | None) -> str:
     name = Path(filename or "").name
     if not name or name in {".", ".."} or not name.lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="Only PDF files with a valid filename are allowed")
+        raise HTTPException(
+            status_code=400, detail="Only PDF files with a valid filename are allowed"
+        )
     return name
 
 
 def _is_pdf(upload: UploadFile, initial_bytes: bytes) -> bool:
-    return upload.content_type in {"application/pdf", "application/x-pdf"} and initial_bytes.startswith(b"%PDF-")
+    return upload.content_type in {
+        "application/pdf",
+        "application/x-pdf",
+    } and initial_bytes.startswith(b"%PDF-")
 
 
 def _rebuild_index() -> int:
@@ -122,7 +134,7 @@ def _parse_completion(content: str | None) -> tuple[str, dict[str, Any] | None]:
 
 @app.get("/health")
 def health() -> dict[str, Any]:
-    return {"status": "ok", "llmConfigured": groq_client is not None}
+    return {"status": "ok", "llmConfigured": gemini_client is not None}
 
 
 @app.post("/upload", status_code=201)
@@ -137,13 +149,17 @@ async def upload_pdf(file: UploadFile = File(...)) -> dict[str, Any]:
         with temporary.open("wb") as output:
             first_chunk = await file.read(8192)
             if not _is_pdf(file, first_chunk):
-                raise HTTPException(status_code=400, detail="The uploaded file is not a valid PDF")
+                raise HTTPException(
+                    status_code=400, detail="The uploaded file is not a valid PDF"
+                )
             output.write(first_chunk)
             total += len(first_chunk)
             while chunk := await file.read(1024 * 1024):
                 total += len(chunk)
                 if total > MAX_UPLOAD_BYTES:
-                    raise HTTPException(status_code=413, detail="PDF exceeds the upload size limit")
+                    raise HTTPException(
+                        status_code=413, detail="PDF exceeds the upload size limit"
+                    )
                 output.write(chunk)
         if destination.exists():
             previous.unlink(missing_ok=True)
@@ -164,7 +180,12 @@ async def upload_pdf(file: UploadFile = File(...)) -> dict[str, Any]:
     finally:
         previous.unlink(missing_ok=True)
         await file.close()
-    return {"message": "PDF uploaded and indexed", "filename": filename, "chunks": chunks, "ready": True}
+    return {
+        "message": "PDF uploaded and indexed",
+        "filename": filename,
+        "chunks": chunks,
+        "ready": True,
+    }
 
 
 @app.delete("/reset")
@@ -188,17 +209,26 @@ async def ask_question(payload: Question) -> dict[str, Any]:
     question = payload.question.strip()
     if not question:
         raise HTTPException(status_code=400, detail="Question is required")
-    if groq_client is None:
-        raise HTTPException(status_code=503, detail="The language model is not configured")
+    if gemini_client is None:
+        raise HTTPException(
+            status_code=503, detail="The language model is not configured"
+        )
 
-    selected_sources = list(dict.fromkeys(_safe_pdf_name(source) for source in payload.sources or []))
+    selected_sources = list(
+        dict.fromkeys(_safe_pdf_name(source) for source in payload.sources or [])
+    )
     try:
         docs = await run_in_threadpool(_search, question, selected_sources or None)
     except Exception:
         logger.exception("Document retrieval failed")
-        raise HTTPException(status_code=503, detail="Document search is temporarily unavailable")
+        raise HTTPException(
+            status_code=503, detail="Document search is temporarily unavailable"
+        )
     if not docs:
-        return {"answer": "I couldn't find relevant information in the selected PDFs.", "sources": []}
+        return {
+            "answer": "I couldn't find relevant information in the selected PDFs.",
+            "sources": [],
+        }
 
     context = "\n\n---\n\n".join(doc.page_content for doc in docs)
     prompt = (
@@ -213,13 +243,17 @@ async def ask_question(payload: Question) -> dict[str, Any]:
     )
     try:
         completion = await run_in_threadpool(
-            groq_client.chat.completions.create,
-            model=os.getenv("GROQ_MODEL", "llama-3.1-8b-instant"),
-            messages=[{"role": "system", "content": "You are a precise document assistant."}, {"role": "user", "content": prompt}],
-            temperature=0.2,
-            response_format={"type": "json_object"},
+            gemini_client.models.generate_content,
+            model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite"),
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                system_instruction="You are a precise document assistant. Return valid JSON only.",
+                temperature=0.2,
+                max_output_tokens=1200,
+                response_mime_type="application/json",
+            ),
         )
-        answer, visualization = _parse_completion(completion.choices[0].message.content)
+        answer, visualization = _parse_completion(completion.text)
     except Exception:
         logger.exception("LLM request failed")
         raise HTTPException(status_code=502, detail="The language model request failed")
