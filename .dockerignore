@@ -1,0 +1,12 @@
+.git/
+.env
+.venv/
+backend/venv/
+backend/__pycache__/
+backend/*.pyc
+backend/data/chroma/
+backend/data/pdfs/
+backend/data/uploads/
+backend/data/temp/
+frontend-react/
+*.log

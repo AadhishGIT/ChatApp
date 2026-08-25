@@ -147,7 +147,7 @@ Enjoy building with RAG!
 1. Create an account at https://railway.com/ and start the Free Trial. Railway currently advertises a one-time $5 trial credit without requiring a card.
 2. Create a new project and choose **Deploy from GitHub repo**.
 3. Select this repository and create a service from it.
-4. Open the service **Settings**, set **Root Directory** to `/backend`, and redeploy.
+4. Open the service **Settings**, leave **Root Directory** empty, and redeploy. Railway will use the root `railway.toml` and Dockerfile.
 5. Open **Variables** and add:
 
 ```text
