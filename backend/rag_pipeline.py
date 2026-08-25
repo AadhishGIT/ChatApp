@@ -12,7 +12,11 @@ MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 
 
 def create_embeddings() -> HuggingFaceEmbeddings:
-    return HuggingFaceEmbeddings(model_name=MODEL_NAME)
+    return HuggingFaceEmbeddings(
+        model_name=MODEL_NAME,
+        model_kwargs={"device": "cpu"},
+        encode_kwargs={"batch_size": 1, "normalize_embeddings": True},
+    )
 
 
 class DocumentStore:

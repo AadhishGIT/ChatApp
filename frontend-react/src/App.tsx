@@ -430,7 +430,7 @@ const App: React.FC = () => {
             </div>
 
             <div className="p-3 text-[10px] opacity-60">
-              <div>RAG ChatApp</div>
+              <div>DocuMind</div>
               <div>Gemini · LangChain · Chroma</div>
             </div>
           </aside>
