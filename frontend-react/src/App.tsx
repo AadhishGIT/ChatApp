@@ -537,8 +537,7 @@ const App: React.FC = () => {
                 >
                   👋 Start by uploading a PDF or asking a question like{" "}
                   <span className="italic">
-                    &ldquo;Summarize this document&rdquo; or &ldquo;Create a
-                    chart from its statistics.&rdquo;
+                    &ldquo;Summarize this document&rdquo;
                   </span>
                 </div>
               )}
