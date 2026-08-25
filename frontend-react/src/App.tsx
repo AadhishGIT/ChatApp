@@ -442,7 +442,7 @@ const App: React.FC = () => {
               <div className="flex flex-col gap-1">
                 <div className="flex items-center gap-2">
                   <h1 className="text-lg md:text-2xl font-bold flex items-center gap-2">
-                    <span>🤖 RAG Chatbot</span>
+                    <span>🤖 DocuMind</span>
                   </h1>
                   <span className="hidden sm:inline text-[10px] md:text-xs px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
                     Gemini · LangChain · Chroma
