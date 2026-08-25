@@ -1,4 +1,4 @@
-# 🚀 RAG ChatApp (FastAPI + React + LangChain + Gemini)
+# 🚀 DocuMind (FastAPI + React + LangChain + Gemini)
 
 A full-stack **Retrieval Augmented Generation (RAG)** chatbot application built with:
 
