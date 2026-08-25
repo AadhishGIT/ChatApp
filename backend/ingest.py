@@ -100,28 +100,27 @@ def ingest_documents() -> int:
     if not chunks:
         raise ValueError("No text could be extracted from the available PDFs")
 
-    # Build outside the live directory, then replace it only after embeddings and
-    # writes succeed. This prevents duplicate chunks and avoids a half-built index.
+    # Build inside the mounted directory so the final file moves stay on the
+    # same filesystem. Railway may mount this directory separately from /app.
+    CHROMA_DIR.mkdir(parents=True, exist_ok=True)
     temporary_dir = Path(
-        tempfile.mkdtemp(prefix="chroma-build-", dir=CHROMA_DIR.parent)
+        tempfile.mkdtemp(prefix=".chroma-build-", dir=CHROMA_DIR)
     )
-    backup_dir = CHROMA_DIR.with_name(f"{CHROMA_DIR.name}.previous")
     try:
         Chroma.from_documents(
             chunks,
             embedding=create_embeddings(),
             persist_directory=str(temporary_dir),
         )
-        if backup_dir.exists():
-            shutil.rmtree(backup_dir)
-        if CHROMA_DIR.exists():
-            os.replace(CHROMA_DIR, backup_dir)
-        os.replace(temporary_dir, CHROMA_DIR)
-        if backup_dir.exists():
-            shutil.rmtree(backup_dir)
+        for existing in CHROMA_DIR.iterdir():
+            if existing != temporary_dir:
+                if existing.is_dir():
+                    shutil.rmtree(existing)
+                else:
+                    existing.unlink()
+        for built_file in temporary_dir.iterdir():
+            os.replace(built_file, CHROMA_DIR / built_file.name)
     except Exception:
-        if not CHROMA_DIR.exists() and backup_dir.exists():
-            os.replace(backup_dir, CHROMA_DIR)
         raise
     finally:
         if temporary_dir.exists():
