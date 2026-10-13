@@ -1,20 +1,21 @@
-FROM python:3.10-slim
+FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1 \
-    ANONYMIZED_TELEMETRY=False \
-    TOKENIZERS_PARALLELISM=false \
-    OMP_NUM_THREADS=1 \
-    MKL_NUM_THREADS=1
+    PIP_NO_CACHE_DIR=1
 
 WORKDIR /app
 
+# Install lightweight dependencies
 COPY backend/requirements.txt ./requirements.txt
-RUN pip install --upgrade pip && pip install -r requirements.txt
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
 
+# Copy application code
 COPY backend/ .
-RUN mkdir -p /app/data/pdfs /app/data/chroma
+
+# Ensure data directory exists
+RUN mkdir -p /app/data/pdfs
 
 EXPOSE 8000
 
